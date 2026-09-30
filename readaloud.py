@@ -7,7 +7,8 @@ Usage:
     readaloud.py              read the current selection (falls back to clipboard)
     readaloud.py "some text"  read the given text
 
-Keys in the window: Space = pause/resume, Esc = close.
+Keys in the window: Space = pause/resume, + / - = faster / slower, Esc = close.
+Speed changes apply a couple of sentences ahead and are remembered next time.
 Pressing the hotkey again replaces the running instance.
 """
 import bisect
@@ -30,6 +31,29 @@ MODEL = os.path.expanduser(
 )
 PIPER = shutil.which("piper") or os.path.join(HOME, ".local/bin/piper")
 PIDFILE = os.path.join(tempfile.gettempdir(), "readaloud.pid")
+SPEED_FILE = os.path.join(HOME, ".config", "readaloud", "speed")
+MIN_SPEED, MAX_SPEED, STEP = 0.5, 3.0, 0.25
+
+
+def load_speed():
+    """READALOUD_SPEED env wins, then the saved value, then 1.0."""
+    try:
+        if os.environ.get("READALOUD_SPEED"):
+            v = float(os.environ["READALOUD_SPEED"])
+        else:
+            v = float(open(SPEED_FILE).read().strip())
+    except Exception:
+        v = 1.0
+    return min(MAX_SPEED, max(MIN_SPEED, v))
+
+
+def save_speed(v):
+    try:
+        os.makedirs(os.path.dirname(SPEED_FILE), exist_ok=True)
+        with open(SPEED_FILE, "w") as f:
+            f.write(f"{v:.2f}")
+    except OSError:
+        pass
 
 
 # ---------- single instance ----------
@@ -69,14 +93,24 @@ def grab_text():
 
 
 # ---------- speech ----------
-def synth(sentence, path):
-    subprocess.run(
-        [PIPER, "-m", MODEL, "-f", path],
-        input=" ".join(sentence.split()),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+_flag = {"name": None}  # remembers which length-scale spelling this Piper accepts
+
+
+def synth(sentence, path, length_scale=1.0):
+    """length_scale < 1 is faster, > 1 is slower."""
+    base = [PIPER, "-m", MODEL, "-f", path]
+    data = " ".join(sentence.split())
+    candidates = [_flag["name"]] if _flag["name"] is not None else [
+        "--length-scale", "--length_scale", ""]
+    err = ""
+    for flag in candidates:
+        cmd = base + ([flag, f"{length_scale:.3f}"] if flag else [])
+        r = subprocess.run(cmd, input=data, text=True, capture_output=True)
+        if r.returncode == 0:
+            _flag["name"] = flag
+            return
+        err = r.stderr
+    raise RuntimeError(err.strip()[-300:] or "piper failed")
 
 
 def player_cmd(path):
@@ -113,6 +147,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="readaloud-")
     stop = threading.Event()
     st = State()
+    speed = {"v": load_speed()}
     q = queue.Queue(maxsize=2)
 
     def producer():
@@ -121,7 +156,7 @@ def main():
                 return
             path = os.path.join(tmp, f"{i}.wav")
             try:
-                synth(text[s:e], path)
+                synth(text[s:e], path, 1.0 / speed["v"])
                 with wave.open(path) as w:
                     dur = w.getnframes() / w.getframerate()
             except Exception as ex:
@@ -158,7 +193,7 @@ def main():
 
     # ---------- window ----------
     root = tk.Tk()
-    root.title("Read Aloud")
+    root.title(f"Read Aloud \u2014 {speed['v']:.2f}x")
     root.geometry("820x520")
     root.attributes("-topmost", True)
 
@@ -214,6 +249,15 @@ def main():
             st.t0 += time.monotonic() - st.pause_at  # keep highlight in sync
             st.paused = False
 
+    def change_speed(delta):
+        speed["v"] = round(min(MAX_SPEED, max(MIN_SPEED, speed["v"] + delta)), 2)
+        save_speed(speed["v"])
+        root.title(f"Read Aloud \u2014 {speed['v']:.2f}x")
+
+    for key in ("<plus>", "<equal>", "<KP_Add>"):
+        root.bind(key, lambda e: change_speed(STEP))
+    for key in ("<minus>", "<KP_Subtract>"):
+        root.bind(key, lambda e: change_speed(-STEP))
     root.bind("<Escape>", quit_all)
     root.bind("<space>", toggle_pause)
     root.protocol("WM_DELETE_WINDOW", quit_all)
