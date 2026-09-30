@@ -26,7 +26,7 @@ import wave
 
 HOME = os.path.expanduser("~")
 MODEL = os.path.expanduser(
-    os.environ.get("READALOUD_VOICE", "~/.local/share/piper/en_US-lessac-medium.onnx")
+    os.environ.get("READALOUD_VOICE", "~/.local/share/piper/en_US-ryan-high.onnx")
 )
 PIPER = shutil.which("piper") or os.path.join(HOME, ".local/bin/piper")
 PIDFILE = os.path.join(tempfile.gettempdir(), "readaloud.pid")
